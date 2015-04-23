@@ -1,15 +1,11 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>                   //LCD
 #include <VirtualWire.h>                        //
-#include <FastLED.h>                          //RGB LED
 #include <MPL3115A2.h>                       //Pressure sensor
 #include <HTU21D.h>                           //Humi&Temp inside sensor
 #include <SoftwareSerial.h>                  //BT RX,TX
-//#include <RunningAverage.h>                  //for averaging fun ;)
-
+//#include <RunningAverage.h>                  //for averaging - not in use now
 #define DS3231_I2C_ADDRESS 0x68              // RTC adress
-#define NUM_LEDS 1                          //how many RGB Leds
-#define DATA_PIN 6                          //PIN RGB
 #define encoder0PinA 3
 #define encoder0PinB 12
 #define encoderKeyPin 13
@@ -20,8 +16,8 @@ volatile int encoder0Pos = 1;
 static boolean rotating=false;
 unsigned int encValueTracking = 1;
 enum pressDuration { normalPress, longPress, veryLongPress };
-long presses[] = { 400, 1000, 2000 };
-byte presss[]={1, 2, 3, 0};
+const int presses[] = { 400, 1000, 2000 };
+const byte presss[]={1, 2, 3, 0};
 int dur = 4;
 byte menu = true;
 byte s = 1;
@@ -29,16 +25,15 @@ byte key = 0;                                //button pressed
 byte dh = false;
 byte dti = false; byte ti = 5;
 byte dBTi = false; unsigned int BTi = 60;
-byte dlighti = false; unsigned long lighti = 120;
+byte dlighti = false; long lighti = 120;
 byte RTCset = false;
 byte lineRTC[] = {1,1,1,1,1,1,2,3}; byte colRTC[] = {1,4,7,10,13,16,0,0};
 ///////////////////////////////////////////////////////
-CRGB leds[NUM_LEDS];
-byte jasnosc = 30;                            //brightness RGB Led
-int wejscie = A0;                            // buttons
-int d = 200;                                //global delay
+const byte wejscie = A0;                            // buttons
+const int d = 200;                                //global delay
 LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 float t; int h; float vvv; float tempt;
+
 static int c = 0;
 const byte STAT1 = 7; const byte STAT2 = 8;
 const byte REFERENCE_3V3 = A3;
@@ -50,19 +45,22 @@ unsigned long last1 = 0;
 unsigned long last2 = 0; unsigned long interval1, interval2 = 0;
 unsigned long last0 = 0;
 byte dzien = 0; byte godzina = 0; byte minuta = 0; byte sekunda = 0;
-unsigned long last3 = -999; unsigned long interval3 = 0; unsigned long interval4 = 0;
+unsigned long last3 = -999;
 int x = 0;
 int wysokosc = 210;
 byte przycisk = 0;
-unsigned long BL;
-byte z, z2, z3, z5;
+byte z, z2;
+//byte z3, z5;
 /////////////////////////////////////////// AVG.
 int iloscPomiarowG = 60;
-float odczytyG[60];
-int indexG = 0;                  // the index of the current reading
-int totalG = 0;                  // the running total
-int averageG = 0;                // the average
-float sr = 0, srG = 0;
+long odczytyG[60];
+int indexG;                  // the index of the current reading
+long totalG;                  // the running total
+long averageG;                // the average
+float sr, srG;
+
+int temps[24]; byte humis[24]; int pres[24];
+unsigned long lastt = 0;
 
 //int iloscPomiarowD = 24*60;
 //float odczytyD[24*60];
@@ -73,12 +71,33 @@ float sr = 0, srG = 0;
 MPL3115A2 myPress;
 HTU21D myHumi;
 ///////////////////////////////////////////////
-int bluetoothTx = 4; int bluetoothRx = 5;
+const byte bluetoothTx = 4; const byte bluetoothRx = 5;
 SoftwareSerial BT(bluetoothTx, bluetoothRx);
+////////////////////////////////////////////
+const uint8_t charBitmap[][8] = {
+   { 0b11111,0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b11111 },
+   { 0b11111,0b10001,0b10001,0b10001,0b10001,0b10001,0b11111,0b11111 },
+   { 0b11111,0b10001,0b10001,0b10001,0b10001,0b11111,0b11111,0b11111 },
+   { 0b11111,0b10001,0b10001,0b10001,0b11111,0b11111,0b11111,0b11111 },
+   { 0b11111,0b10001,0b10001,0b11111,0b11111,0b11111,0b11111,0b11111 },
+   { 0b11111,0b10001,0b11111,0b11111,0b11111,0b11111,0b11111,0b11111 },
+   { 0b11111,0b11111,0b11111,0b11111,0b11111,0b11111,0b11111,0b11111 },
+ };
 
 /*----------------------------------------------------------------------------*/
 void setup()
 {
+  int charBitmapSize = (sizeof(charBitmap ) / sizeof (charBitmap[0]));
+  lcd.begin(20,4);
+  for ( int i = 0; i < charBitmapSize; i++ )
+   {
+      lcd.createChar ( i, (uint8_t *)charBitmap[i] );
+   }
+  
+  lcd.backlight();lcd.setCursor(0,0);lcd.print(F("Stacja meteo")); ///////////////Intro
+  lcd.setCursor(0,1);lcd.print(F("v.0.8  lukas12p"));
+  delay(3000);
+
   pinMode(STAT1, OUTPUT);               //Status LED Blue .BT
   pinMode(STAT2, OUTPUT);               //Status LED Green .working
   pinMode(wejscie, INPUT);             //buttons
@@ -91,7 +110,8 @@ void setup()
   myPress.setModeActive();
   myPress.setModeBarometer();            //Measure pressure in Pascals from 20 to 110 kPa
   myPress.setOversampleRate(7);         //Set Oversample to the recommended 128
-  myPress.enableEventFlags();            //Enable all three pressure and temp event flags 
+  myPress.enableEventFlags();            //Enable all three pressure and temp event flags
+  myHumi.begin();                         //Configure the humidity sensor
   
   pinMode(encoder0PinA, INPUT);           //Encoder
   digitalWrite(encoder0PinA, HIGH);       
@@ -101,24 +121,13 @@ void setup()
   digitalWrite(encoderKeyPin, HIGH); 
   attachInterrupt(1, rotEncoder, CHANGE);
 
-                                        //Configure the humidity sensor
-  myHumi.begin();
-  
-  FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
-  
-  Serial.begin(9600);	// Debugging only
-  Serial.println("START");// Debugging only
+  //Serial.begin(9600);	                // Debugging only
     
   BT.begin(9600);
-  lcd.begin(20,4);
-  lcd.backlight();lcd.setCursor(0,0);lcd.print("Stacja meteo"); ///////////////Intro
-  lcd.setCursor(0,1);lcd.print("v.0.6  lukas12p");
-  delay(3000);lcd.clear();lcd.noBacklight();          
-
   vw_setup(1000);	                 // RF433 rec. bits per sec
   vw_set_rx_pin(2);
   vw_rx_start();                         // Start the receiver PLL running
-  delay(d);
+  delay(d); lcd.clear();lcd.noBacklight();
 }
 /*----------------------------------------------------------------------------*/  
 void rotEncoder()
@@ -126,7 +135,7 @@ void rotEncoder()
   rotating=true; 
   while(rotating) 
   {
-    delay(1);                             //Encoder button debounce + hardware debounce by 0.1uF !!!
+    delay(1);                             //Encoder debounce + hardware debounce by 0.1uF !!!
     if (digitalRead(encoder0PinA) == digitalRead(encoder0PinB)) { encoder0Pos++; } 
     else { encoder0Pos--; }
     rotating=false;
@@ -136,7 +145,7 @@ void rotEncoder()
 /*----------------------------------------------------------------------------*/
 void loop()
 {
-  if (millis() < 1000) {last=0;last1=0;last2=0;last3=0;BL=0;interval3=0;interval4=0;} // reset timers if millis reset after ~50 days
+  if (millis() < 1000) {last=0;last1=0;last2=0;last3=0;lastt=0;} // reset timers if millis reset after ~50 days
   digitalWrite(STAT2, true);
   //////////////////////////////////////////////////////////////////////// ENCODER + BUTTON
   static unsigned long btnHeld = 0;
@@ -171,7 +180,7 @@ void loop()
       int i;
         for (i = 0; i < 10; i++)
           {   dane +=char(buf[i]);  }
-	for (i = 0; i < 4; i++)
+	      for (i = 0; i < 4; i++)
           {   temp +=char(buf[i]);  }
         for (i > 4; i < 6; i++)
           {   humi +=char(buf[i]);  }
@@ -188,12 +197,8 @@ void loop()
         last3 = millis();
         lcd.clear();
       }
-///////////////////////////////////////////////////  
-  interval3 = millis() - last3;
-  interval4 = millis() - BL;
-  interval = millis() - last;
 /////////////////////////////////////////////////   INSIDE SENSORS READING  
-  if (interval > ti*1000 )
+  if (millis() - last > ti*1000 )
     { humiIn = myHumi.readHumidity();
       t1 = myPress.readTemp();
       p1 = myPress.readPressure();
@@ -203,31 +208,27 @@ void loop()
       if (t1 > -50 && t1 < 60) {tempIn = t1;}          //IF ERROR
       if (p1 > 1000) {pressIn = p1;}
     }
+  tempt = t + 0.003*wysokosc; 
+  pressRel = (pressIn/100)* exp((9.81*wysokosc)/(287.058*(273.16+tempt)));
    // Need to clen up..........
   if (z2 > 1 || lighti > 300000) z2 = 0;                                                          //MODE
-  if (z5 > 3) z5 = 0;          //SET
+//  if (z5 > 3) z5 = 0;          //SET
 
   int odczyt = analogRead(wejscie);    //przyciski - drabinka
     
   if (odczyt < 950 && przycisk == 0)
   {
     if (odczyt < 10) 
-    { z2 = z2 + 1;lcd.clear(); leds[0] = CRGB::Black; FastLED.show(); last0 = millis();}
-               
-    else if (odczyt < 200 & odczyt > 130) 
-    { z = z + 1;lcd.clear(); leds[0] = CRGB::Black; FastLED.show();}
-              
-    else if (odczyt < 400 & odczyt > 280)
-    { z3 = z3 + 1;lcd.clear(); leds[0] = CRGB::Black; FastLED.show();}  
-            
-    else if (odczyt < 650 & odczyt > 490)
-    { z3 = z3 - 1;lcd.clear(); leds[0] = CRGB::Black; FastLED.show();}
-    
-    else if (odczyt < 880 & odczyt > 750)
-    { z5 = z5 + 1;lcd.clear(); leds[0] = CRGB::Black; FastLED.show();}
-    Serial.println(odczyt);        
+    { z2 = z2 + 1;lcd.clear(); last0 = millis();}
+//    else if (odczyt < 200 & odczyt > 130) 
+//    { z = z + 1;lcd.clear(); }
+//    else if (odczyt < 400 & odczyt > 280)
+//    { z3 = z3 + 1;lcd.clear(); }  
+//    else if (odczyt < 650 & odczyt > 490)
+//    { z3 = z3 - 1;lcd.clear(); }
+//    else if (odczyt < 880 & odczyt > 750)
+//    { z5 = z5 + 1;lcd.clear(); }
     przycisk = przycisk++;   
-    BL = millis();
   }
   
   if (odczyt > 950) przycisk = 0;
@@ -247,7 +248,7 @@ void loop()
     lcd.clear();
     BT.print(dzien);BT.print(",");BT.print(godzina);BT.print(",");BT.print(minuta);BT.print(",");
     BT.print(t);BT.print(",");BT.print(h);BT.print(",");BT.print(vvv);BT.print(",");
-    BT.print(tempIn);BT.print(",");BT.print(humiIn);BT.print(",");BT.print(pressIn/100);BT.print(",");BT.print(light);BT.println();
+    BT.print(tempIn);BT.print(",");BT.print(humiIn);BT.print(",");BT.print(pressIn/100);BT.print(",");BT.print(pressRel);BT.print(",");BT.print(light);BT.println();
     digitalWrite(STAT1, false);
     srG = sredniaGodz() / 100;
     }
@@ -265,7 +266,7 @@ void loop()
     case 0: {statsus(); break;}
     case 1: {meteo1(); break;}
     case 2: {meteo2(); break;}
-    case 3: {baro(z5,z3); break;}
+    case 3: {baro(); break;}
     case 4: {setu(); break;}
     case 5: {set0(); break;} 
     case 6: {set1(); break;}
@@ -279,17 +280,28 @@ void loop()
     case 0: lcd.noBacklight(); break;
     case 1: lcd.backlight(); break;
     }
-  
-/////////////////////////////////////////////////////////////////////////////// 
- 
-  
-  
+///////////////////////////////////////////////////////////////////////////  SENSOR HISTORY ARRAY
+  if ((millis() - lastt) > 900000)
+    {
+      lastt = millis();
+      for (byte j=0; j<23; j++) { temps[j] = temps[j+1]; }
+      for (byte j=0; j<23; j++) { humis[j] = humis[j+1]; }
+      for (byte j=0; j<23; j++) { pres[j] = pres[j+1]; }
+
+    temps[23] = t+0.5;
+    humis[23] = h+0.5;
+    pres[23] = pressRel;
+  }
   }  
 /*----------------------------------------------------------------------------*///  MENU SETUP
 void setu()
 {
-  lcd.setCursor(5,1);
-  lcd.print("SETUP");
+  lcd.setCursor(7,1);
+  lcd.print(F("SETUP"));
+  lcd.setCursor(5,3);
+  lcd.print(F("Free RAM"));
+  lcd.setCursor(14,3);
+  lcd.print(freeRam());
     
   if (presss[dur] == 1) { dur = 4; encoder0Pos = 0; lcd.clear(); set0();}
 }
@@ -302,15 +314,15 @@ void set0()
   if (s != encoder0Pos) { s = encoder0Pos; lcd.clear();}
   
   lcd.setCursor(1,0);
-  lcd.print("Setup RTC");
+  lcd.print(F("Setup RTC"));
   lcd.setCursor(0,s);
-  lcd.print(">");
+  lcd.print(F(">"));
   lcd.setCursor(1,1);
-  lcd.print("Setup 1");
+  lcd.print(F("Setup 1"));
   lcd.setCursor(1,2);
-  lcd.print("Setup 2");
+  lcd.print(F("Setup 2"));
   lcd.setCursor(1,3);
-  lcd.print("Back");
+  lcd.print(F("Back"));
   
   z=5;
   if (s == 0 && presss[dur] == 1) { dur = 4; lcd.clear(); encoder0Pos = 0; 
@@ -333,56 +345,35 @@ void RTCsetup()
     if (s != encoder0Pos) { s = encoder0Pos; lcd.clear();}
     }
   
-  lcd.setCursor(1,0);
-  if (dayOfMonth<10) {lcd.print("0");}
-  lcd.print(dayOfMonth);
-  lcd.setCursor(3,0);
-  lcd.print("/");
-  lcd.setCursor(4,0);
-  if (month<10) {lcd.print("0");}
-  lcd.print(month);
-  lcd.setCursor(6,0);
-  lcd.print("/");
-  lcd.setCursor(7,0);
-  if (year<10) {lcd.print("0");}
-  lcd.print(year);
-  lcd.setCursor(10,0);
-  if (hour<10) {lcd.print("0");}
-  lcd.print(hour);
-  lcd.setCursor(12,0);
-  lcd.print(":");
-  lcd.setCursor(13,0);
-  if (minute<10) {lcd.print("0");}
-  lcd.print(minute);
-  lcd.setCursor(16,0);
+  printRTC();
   switch(dayOfWeek){
   case 1:
-    lcd.print("Sun");
+    lcd.print(F("Sun"));
     break;
   case 2:
-    lcd.print("Mon");
+    lcd.print(F("Mon"));
     break;
   case 3:
-    lcd.print("Tue");
+    lcd.print(F("Tue"));
     break;
   case 4:
-    lcd.print("Wen");
+    lcd.print(F("Wen"));
     break;
   case 5:
-    lcd.print("Thr");
+    lcd.print(F("Thr"));
     break;
   case 6:
-    lcd.print("Fri");
+    lcd.print(F("Fri"));
     break;
   case 7:
-    lcd.print("Sat");
+    lcd.print(F("Sat"));
     break;
   }
   
   lcd.setCursor(1,2);
-  lcd.print("Save & exit");
+  lcd.print(F("Save & exit"));
   lcd.setCursor(1,3);
-  lcd.print("Back");
+  lcd.print(F("Back"));
       
   z = 8;
   if (s == 0 && !RTCset && presss[dur] == 1) { RTCset = true; encoder0Pos = dayOfMonth; dur = 4; lcd.clear();}
@@ -438,15 +429,15 @@ void set1()
     }
   
   lcd.setCursor(0,0);
-  lcd.print("SETUP 1");
+  lcd.print(F("SETUP 1"));
   lcd.setCursor(1,1);
-  lcd.print("Wysokosc");
+  lcd.print(F("Wysokosc"));
   lcd.setCursor(14,1);
   lcd.print(wysokosc);  
   lcd.setCursor(1,2);
-  lcd.print("yyy");
+  lcd.print(F("yyy"));
   lcd.setCursor(1,3);
-  lcd.print("Back");
+  lcd.print(F("Back"));
     
   z = 6;
   if (s == 1 && !dh && presss[dur] == 1) { dh = true; encoder0Pos = wysokosc; dur = 4; lcd.clear(); }
@@ -469,22 +460,21 @@ void set2()
     }
   
   lcd.setCursor(0,0);
-  lcd.print("SETUP 2");
+  lcd.print(F("SETUP 2"));
   lcd.setCursor(1,1);
-  lcd.print("Backlight");
+  lcd.print(F("Backlight"));
   lcd.setCursor(14,1);
   lcd.print(lighti);
   lcd.setCursor(1,2);
-  lcd.print("BT interval");
+  lcd.print(F("BT interval"));
   lcd.setCursor(14,2);
   lcd.print(BTi);
   lcd.setCursor(1,3);
-  lcd.print("Back");
+  lcd.print(F("Back"));
     
   z = 7;
   if (s == 1 && !dlighti && presss[dur] == 1) { dlighti = true; encoder0Pos = lighti; dur = 4; lcd.clear(); }
-  if (s == 1 && dlighti == 1) { if (lighti < encoder0Pos) { lighti = lighti + 5; encoder0Pos = lighti; lcd.clear();};
-                                if (lighti > encoder0Pos) { lighti = lighti - 5; encoder0Pos = lighti; lcd.clear();}; }
+  if (s == 1 && dlighti == 1) { if (lighti != encoder0Pos) { lighti = lighti + (encoder0Pos-lighti)*5; encoder0Pos = lighti; last0 = millis(); lcd.clear();};}
   if (s == 1 && dlighti == 1 && presss[dur] == 1) { dlighti = false; dur = 4; encoder0Pos = 3; }
   
   if (s == 2 && !dBTi && presss[dur] == 1) { dBTi = true; encoder0Pos = BTi; dur = 4; lcd.clear(); }
@@ -494,26 +484,23 @@ void set2()
   if (s == 3 && presss[dur] == 1) { encoder0Pos = 3; dur = 4; lcd.clear(); z = 5; }  
 }
 /*----------------------------------------------------------------------------*/
-void baro (int q0, byte q1)
+void baro ()
 {
-    
-  tempt = t + 0.003*wysokosc; 
-  pressRel = (pressIn/100)* exp((9.81*wysokosc)/(287.058*(273.16+tempt)));
   lcd.setCursor(0,0);
-  lcd.print("REL");
+  lcd.print(F("REL"));
   lcd.setCursor(4,0);
   lcd.print(pressRel,1);
   lcd.setCursor(11,0);
-  lcd.print("h");
+  lcd.print(F("h"));
   lcd.setCursor(12,0);
   lcd.print(wysokosc);
   lcd.setCursor(0,1);
-  lcd.print("ABS");
+  lcd.print(F("ABS"));
   lcd.setCursor(4,1);
   lcd.print(pressIn/100,1);
 }
 /*----------------------------------------------------------------------------*/
-float humidex(float tt, int hh)      //
+float humidex(float tt, int hh)      
 {
   float dew = pow((hh/100),(1/8)) * (112+(0.9*tt)) + (0.1*tt) - 112;
   float a = (5417.7530*((1/273.16)-(1/(273.16+dew))));
@@ -540,117 +527,84 @@ float get_battery_level()
   return(rawVoltage);
 }
 /*----------------------------------------------------------------------------*/
-long sredniaGodz()
+float sredniaGodz()
 {
-  iloscPomiarowG = 60 / BTi;
+  iloscPomiarowG = 3600 / BTi;
   // subtract the last reading:
-  if (totalG > 60 ) { totalG = totalG - odczytyG[indexG];}        
+  totalG = totalG - odczytyG[indexG];        
   // read from the sensor:  
   odczytyG[indexG] = t * 100;
   // add the reading to the total:
   totalG = totalG + odczytyG[indexG];      
   // advance to the next position in the array:  
   indexG = indexG + 1;                    
-
   // if we're at the end of the array...
   if (indexG >= iloscPomiarowG)             
-    // ...wrap around to the beginning:
+    //to the beginning
     indexG = 0;                          
-
   // calculate the average:
-  srG = totalG / iloscPomiarowG;
-    return srG;        
+    return (totalG / iloscPomiarowG);        
 }
 /*----------------------------------------------------------------------------*/
 void meteo1()
 {
-  int index = humidex(tempIn,humiIn);
-
-  lcd.setCursor(0,0);
-  lcd.print("Tin");
-  lcd.setCursor(4,0);
-  lcd.print(tempIn,1);
-  lcd.setCursor(10,0);
-  lcd.print("L");
-  lcd.setCursor(12,0);
-  lcd.print(light);
-  lcd.setCursor(0,1);
-  lcd.print("Hin");
-  lcd.setCursor(4,1);
-  lcd.print(humiIn,1);
-  lcd.setCursor(10,1);
-  if (pressIn/100 < 1000) {lcd.print(' ');} 
-  lcd.print(pressIn/100,1);
-                                            //RGB Led colour based on humidex
-  FastLED.setBrightness(jasnosc);
-  if (index < 30) {leds[0] = CRGB::Green;}
-  else if (index >= 30 && index <40) leds[0] = CRGB::Yellow;
-  else if (index >= 40 && index <46) leds[0] = CRGB::Orange;
-  else if (index >= 46) leds[0] = CRGB::Red;
-  FastLED.show();
-  }
+  lcd.setCursor(0,0);lcd.print(F("Tin"));lcd.setCursor(4,0);lcd.print(tempIn,1);lcd.setCursor(10,0);lcd.print(F("Light"));lcd.setCursor(16,0);lcd.print(light,2);
+  lcd.setCursor(0,1);lcd.print(F("Hin"));lcd.setCursor(4,1);lcd.print(humiIn,1);lcd.setCursor(10,1);lcd.print(F("Humix"));lcd.setCursor(16,1);lcd.print(humidex(t,h),0);lcd.setCursor(19,1);lcd.write(byte(batLevel()));
+  lcd.setCursor(0,2);lcd.print(F("Tou"));lcd.setCursor(4,2);lcd.print(t,1);lcd.setCursor(10,2);lcd.print(F("Pr"));lcd.setCursor(14,2);if (pressRel < 1000) {lcd.print(' ');}lcd.print(pressRel,1);
+  lcd.setCursor(0,3);lcd.print(F("Hou"));lcd.setCursor(4,3);lcd.print(h,1);lcd.setCursor(10,3);lcd.print(F("Pa"));lcd.setCursor(14,3);if (pressIn/100 < 1000) {lcd.print(' ');}lcd.print(pressIn/100,1);
+}
 /*----------------------------------------------------------------------------*/
 void meteo2()
 {
-  int index = humidex(t,h);
+  lcd.setCursor(0,0);lcd.print(F("  Now   1h  3h  6h"));  
+  lcd.setCursor(0,1);lcd.print(F("T"));lcd.setCursor(2,1);lcd.print(t,1);lcd.setCursor(8,1);lcd.print(temps[19]);lcd.setCursor(12,1);lcd.print(temps[11]);lcd.setCursor(16,1);lcd.print(temps[0]);//lcd.setCursor(17,1);lcd.print(temps[0]);
+  lcd.setCursor(0,2);lcd.print(F("H"));lcd.setCursor(2,2);lcd.print(h);lcd.setCursor(8,2);lcd.print(humis[19]);lcd.setCursor(12,2);lcd.print(humis[11]);lcd.setCursor(16,2);lcd.print(humis[0]);//lcd.print(humis[0]);
+  lcd.setCursor(0,3);lcd.print(F("P"));lcd.setCursor(2,3);lcd.print(pressRel,0);lcd.setCursor(8,3);lcd.print(pres[19]);lcd.setCursor(12,3);lcd.print(pres[11]);lcd.setCursor(16,3);lcd.print(pres[0]);//lcd.print(pres[0]);
 
-  lcd.setCursor(0,0);
-  lcd.print("Tout");
-  lcd.setCursor(5,0);
-  lcd.print(t,1);
-  lcd.setCursor(10,0);
-  lcd.print("Av");
-  lcd.setCursor(13,0);
-  lcd.print(srG,1);
-  lcd.setCursor(0,1);
-  lcd.print("Hout");
-  lcd.setCursor(5,1);
-  lcd.print(h);
-  lcd.setCursor(9,1);
-  lcd.print("Vb ");
-  lcd.setCursor(12,1);
-  lcd.print(vvv);
-                                            
-  FastLED.setBrightness(jasnosc);
-  if (index < 30) {leds[0] = CRGB::Green;}
-  else if (index >= 30 && index <40) leds[0] = CRGB::Yellow;
-  else if (index >= 40 && index <46) leds[0] = CRGB::Orange;
-  else if (index >= 46) leds[0] = CRGB::Red;
-  FastLED.show();
+//  lcd.setCursor(13,0);
+//  lcd.print(srG,2);
+
 }
 /*----------------------------------------------------------------------------*/
 void statsus()
 {
-  unsigned long inter = interval3/1000; 
-  lcd.setCursor(0,0); 
-  lcd.print("Last rec:");
-  lcd.setCursor(10,0);
-  if (inter < 10) lcd.print("0");
-  if (inter < 100) lcd.print("0");
-  lcd.print(inter), 
-  lcd.setCursor(15,0); 
-  lcd.print("s");
-  lcd.setCursor(0,1); 
-  lcd.print("Online:");
-  lcd.setCursor(8,1);
-  if (dzien < 10) lcd.print("0");
-  lcd.print(dzien), 
-  lcd.setCursor(10,1); 
-  lcd.print(":");
-  lcd.setCursor(11,1);
-  if (godzina < 10) lcd.print("0");
-  lcd.print(godzina);
-  lcd.setCursor(13,1); 
-  lcd.print(":");
-  lcd.setCursor(14,1);
-  if (minuta < 10) lcd.print("0"); 
-  lcd.print(minuta);
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month, &year);
+  printRTC();
+  unsigned long inter = (millis() - last3)/1000; 
+  lcd.setCursor(0,1); lcd.print(F("Last rec:"));lcd.setCursor(10,1);if (inter < 10) lcd.print("0");if (inter < 100) lcd.print("0");lcd.print(inter);lcd.setCursor(15,1);lcd.print(F("s"));
+  lcd.setCursor(0,2); lcd.print(F("Online:"));lcd.setCursor(8,2);if (dzien < 10) lcd.print("0");lcd.print(dzien);lcd.setCursor(10,2);lcd.print(F(":"));lcd.setCursor(11,2);if (godzina < 10) lcd.print("0");lcd.print(godzina);
+    lcd.setCursor(13,2); lcd.print(F(":"));lcd.setCursor(14,2);if (minuta < 10) lcd.print("0"); lcd.print(minuta);
+  lcd.setCursor(0,3);lcd.print(F("Vb "));lcd.setCursor(3,3);lcd.print(vvv);
 }
 /*----------------------------------------------------------------------------*/
-void setDS3231time(byte second, byte minute, byte hour, byte dayOfWeek, byte
-dayOfMonth, byte month, byte year)
+void printRTC()
 {
-  // sets time and date data to DS3231
+  lcd.setCursor(1,0);
+  if (dayOfMonth<10) {lcd.print("0");}
+  lcd.print(dayOfMonth);
+  lcd.setCursor(3,0);
+  lcd.print("/");
+  lcd.setCursor(4,0);
+  if (month<10) {lcd.print("0");}
+  lcd.print(month);
+  lcd.setCursor(6,0);
+  lcd.print("/");
+  lcd.setCursor(7,0);
+  if (year<10) {lcd.print("0");}
+  lcd.print(year);
+  lcd.setCursor(10,0);
+  if (hour<10) {lcd.print("0");}
+  lcd.print(hour);
+  lcd.setCursor(12,0);
+  lcd.print(":");
+  lcd.setCursor(13,0);
+  if (minute<10) {lcd.print("0");}
+  lcd.print(minute);
+  lcd.setCursor(16,0);
+}
+/*----Set-RTC-----------------------------------------------------------------------*/
+void setDS3231time(byte second, byte minute, byte hour, byte dayOfWeek, byte dayOfMonth, byte month, byte year)
+{  // sets time and date data to DS3231
   Wire.beginTransmission(DS3231_I2C_ADDRESS);
   Wire.write(0); // set next input to start at the seconds register
   Wire.write(decToBcd(second)); // set seconds
@@ -662,13 +616,8 @@ dayOfMonth, byte month, byte year)
   Wire.write(decToBcd(year)); // set year (0 to 99)
   Wire.endTransmission();
 }
-void readDS3231time(byte *second,
-byte *minute,
-byte *hour,
-byte *dayOfWeek,
-byte *dayOfMonth,
-byte *month,
-byte *year)
+/*-----Read-RTC----------------------------------------------------------------------*/
+void readDS3231time(byte *second,byte *minute,byte *hour,byte *dayOfWeek,byte *dayOfMonth,byte *month,byte *year)
 {
   Wire.beginTransmission(DS3231_I2C_ADDRESS);
   Wire.write(0); // set DS3231 register pointer to 00h
@@ -684,13 +633,32 @@ byte *year)
   *year = bcdToDec(Wire.read());
 }
 
-// Convert normal decimal numbers to binary coded decimal
+/*----------------------------------------------------------------------------*/// Convert normal decimal numbers to binary coded decimal
 byte decToBcd(byte val)
 {
   return( (val/10*16) + (val%10) );
 }
-                                          // Convert binary coded decimal to normal decimal numbers
+/*----------------------------------------------------------------------------*/// Convert binary coded decimal to normal decimal numbers
 byte bcdToDec(byte val)
 {
   return( (val/16*10) + (val%16) );
-} 
+}
+/*---Free-Ram------------------------------------------------------------------------*/
+    int freeRam ()
+    {
+    extern int __heap_start, *__brkval;
+    int v;
+    return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+    }
+/*---BATT-Bar-Level----------------------------------------------------------------------*/
+byte batLevel()
+{
+  byte vii;
+  for (float vi=0; vi<7; vi++)
+  { 
+    vii=vi;
+    if (vvv < (3.5 + vi*0.1)) break;    
+  }
+  Serial.print(vii);
+  return vii;
+  }
